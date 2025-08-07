@@ -1,36 +1,160 @@
 import streamlit as st
+import requests
+import uuid
+import json # jsonライブラリをインポート
+import os   # ファイルの存在を確認するためにosライブラリをインポート
 
-# ==============================================================================
-# ▼▼▼【重要】Secrets機能の動作確認用テストコードです ▼▼▼
-# ==============================================================================
-# このコードは、Streamlit CloudのSecrets機能が正しく動作しているかを確認するためだけの
-# 一時的なテストプログラムです。
-# このテストが完了したら、元のチャットアプリのコードに戻します。
-# ==============================================================================
+# ----------------------------
+# Dify API設定
+# ----------------------------
+# Streamlit Community Cloudの「Secrets」機能で安全に管理します。
+PERSONA_API_KEYS = {
+    "①ミノンBC理想ファン_乳児ママ_本田ゆい（30）": st.secrets.get("PERSONA_1_KEY", ""),
+    "②ミノンBC理想ファン_乳児パパ_安西涼太（31）": st.secrets.get("PERSONA_2_KEY", ""),
+    "③ミノンBC理想ファン_保育園/幼稚園ママ_戸田綾香（35）": st.secrets.get("PERSONA_3_KEY", ""),
+    "④ミノンBC理想ファン_更年期女性_高橋恵子（48）": st.secrets.get("PERSONA_4_KEY", ""),
+    "⑤ミノンBC未満ファン_乳児ママ_中村優奈（31）": st.secrets.get("PERSONA_5_KEY", ""),
+    "⑥ミノンBC未満ファン_乳児パパ_岡田健志（32）": st.secrets.get("PERSONA_6_KEY", ""),
+    "⑦ミノンBC未満ファン_保育園・幼稚園ママ_石田真帆（34）": st.secrets.get("PERSONA_7_KEY", ""),
+    "⑧ミノンBC未満ファン_更年期女性_杉山紀子（51）": st.secrets.get("PERSONA_8_KEY", "")
+}
 
-st.title("Streamlit Secrets 機能テスト")
+# ペルソナごとにアバター画像を管理するための辞書
+PERSONA_AVATARS = {
+    "①ミノンBC理想ファン_乳児ママ_本田ゆい（30）": "persona_1.jpg",
+    "②ミノンBC理想ファン_乳児パパ_安西涼太（31）": "persona_2.jpg",
+    "③ミノンBC理想ファン_保育園/幼稚園ママ_戸田綾香（35）": "persona_3.jpg",
+    "④ミノンBC理想ファン_更年期女性_高橋恵子（48）": "persona_4.jpg",
+    "⑤ミノンBC未満ファン_乳児ママ_中村優奈（31）": "persona_5.jpg",
+    "⑥ミノンBC未満ファン_乳児パパ_岡田健志（32）": "persona_6.jpg",
+    "⑦ミノンBC未満ファン_保育園・幼稚園ママ_石田真帆（34）": "persona_7.png",
+    "⑧ミノンBC未満ファン_更年期女性_杉山紀子（51）": "persona_8.jpg"
+}
 
-st.info("このページは、StreamlitのSecrets機能が正しく動作しているかを確認するためのテストです。")
 
-# 'st.secrets' を使って値の取得を試みる
-# Streamlit CloudのSecrets設定に 'TEST_KEY = "..."' が正しく設定されていれば、
-# 'test_value' にはその値が入ります。
-try:
-    test_value = st.secrets["TEST_KEY"]
-except KeyError:
-    test_value = None # キーが存在しない場合はNoneを設定
+DIFY_API_URL = "https://api.dify.ai/v1/chat-messages"
 
-if test_value:
-    st.success("✅ Secretsからキーを正常に読み込めました！")
-    st.balloons()
-    st.write("設定されていた値は以下の通りです：")
-    st.code(test_value, language="text")
-    st.write("---")
-    st.write("この結果は、Secrets機能自体は正しく動作していることを示しています。")
-    st.write("元のエラーの原因は、キーの名前の不一致など、別の要因である可能性が高いです。")
+# ----------------------------
+# ページ設定
+# ----------------------------
+st.set_page_config(page_title="Dify連携チャット", layout="centered")
 
+# --- session_stateの初期化 ---
+if "page" not in st.session_state:
+    st.session_state.page = "login"
+    st.session_state.cid = "" 
+    st.session_state.messages = []
+    st.session_state.bot_type = "" # 選択されたボットの種類を保存
+    st.session_state.user_avatar_data = None # ユーザーアバターのデータを保存
+
+# ----------------------------
+# STEP 1：ユーザー情報入力画面
+# ----------------------------
+if st.session_state.page == "login":
+    st.title("AIペルソナとの対話を始める")
+
+    with st.form("user_info_form"):
+        name = st.text_input("あなたのお名前（例：山田太郎）")
+        bot_type = st.selectbox("対話するAIペルソナを選んでください", list(PERSONA_API_KEYS.keys()))
+        uploaded_file = st.file_uploader("あなたのアバター画像を選択（任意）", type=["png", "jpg", "jpeg"])
+        submitted = st.form_submit_button("対話開始")
+
+        if submitted and name:
+            if uploaded_file is not None:
+                st.session_state.user_avatar_data = uploaded_file.getvalue()
+            else:
+                st.session_state.user_avatar_data = None
+
+            st.session_state.page = "chat"
+            st.session_state.cid = "" 
+            st.session_state.messages = []
+            st.session_state.bot_type = bot_type 
+            st.query_params["page"] = "chat"
+            st.rerun()
+
+# ----------------------------
+# STEP 2：チャット画面
+# ----------------------------
+elif st.session_state.page == "chat":
+    st.markdown(f"#### 💬 {st.session_state.bot_type}")
+    
+    assistant_avatar_file = PERSONA_AVATARS.get(st.session_state.bot_type, "default_assistant.png")
+    
+    user_avatar = st.session_state.get("user_avatar_data") if st.session_state.get("user_avatar_data") is not None else "👤"
+    assistant_avatar = assistant_avatar_file if os.path.exists(assistant_avatar_file) else "🤖"
+
+    # ▼▼▼ 修正点 ▼▼▼
+    # 条件を "？" から "🤖" に修正しました
+    if assistant_avatar == "🤖":
+        st.info(f"アシスタントのアバター画像（{assistant_avatar_file}）が見つかりません。app.py と同じフォルダに配置すると、カスタムアイコンが表示されます。")
+
+    for msg in st.session_state.messages:
+        current_avatar = assistant_avatar if msg["role"] == "assistant" else user_avatar
+        with st.chat_message(msg["role"], avatar=current_avatar):
+            st.markdown(msg["content"])
+
+    if user_input := st.chat_input("メッセージを入力してください"):
+        with st.chat_message("user", avatar=user_avatar):
+            st.markdown(user_input)
+        st.session_state.messages.append({"role": "user", "content": user_input})
+
+        current_api_key = PERSONA_API_KEYS.get(st.session_state.bot_type)
+
+        if not current_api_key:
+            st.error("選択されたペルソナのAPIキーが設定されていません。Streamlit CloudのSecretsを確認してください。")
+        else:
+            headers = {
+                "Authorization": f"Bearer {current_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "inputs": {},
+                "query": user_input,
+                "user": "streamlit-user",
+                "conversation_id": st.session_state.cid,
+                "response_mode": "blocking", 
+            }
+
+            with st.chat_message("assistant", avatar=assistant_avatar):
+                try:
+                    with st.spinner("AIが応答を生成中です..."):
+                        res = requests.post(
+                            DIFY_API_URL, 
+                            headers=headers, 
+                            data=json.dumps(payload),
+                            timeout=30
+                        )
+                        res.raise_for_status()
+                        
+                        res_json = res.json()
+                        answer = res_json.get("answer", "⚠️ 応答がありませんでした。")
+                        
+                        new_conv_id = res_json.get("conversation_id")
+                        if new_conv_id:
+                            st.session_state.cid = new_conv_id
+                        
+                        st.markdown(answer)
+
+                except requests.exceptions.HTTPError as e:
+                    error_response = e.response
+                    error_details = f"Status Code: {error_response.status_code}\n"
+                    error_details += f"Response Body: {error_response.text}"
+                    answer = f"⚠️ APIリクエストでHTTPエラーが発生しました：\n\n---\n**詳細情報:**\n\n```\n{error_details}\n```"
+                    st.markdown(answer)
+                except Exception as e:
+                    answer = f"⚠️ 不明なエラーが発生しました：\n\n{e}"
+                    st.markdown(answer)
+
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+
+# ----------------------------
+# ページパラメータが不正な場合の表示
+# ----------------------------
 else:
-    st.error("❌ Secretsからキーを読み込めませんでした。")
-    st.write("---")
-    st.write("この結果は、Streamlit CloudのSecrets機能が何らかの理由で正しく動作していないことを示しています。")
-    st.write("Secretsの入力内容（キーの名前、ダブルクォーテーションなど）を再度ご確認ください。")
+    st.error("不正なページ指定です。URLを確認してください。")
+    if st.button("最初のページに戻る"):
+        st.session_state.page = "login"
+        st.session_state.cid = ""
+        st.query_params.clear()
+        st.rerun()
