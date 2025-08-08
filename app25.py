@@ -51,7 +51,7 @@ if "page" not in st.session_state:
 # STEP 1：ユーザー情報入力画面
 # ----------------------------
 if st.session_state.page == "login":
-    st.title("AIペルソナとの対話を始める")
+    st.title("ミノンBCのAIファンとの対話を始める")
 
     with st.form("user_info_form"):
         name = st.text_input("あなたのお名前（例：山田太郎）")
@@ -157,4 +157,5 @@ else:
         st.session_state.page = "login"
         st.session_state.cid = ""
         st.query_params.clear()
+
         st.rerun()
