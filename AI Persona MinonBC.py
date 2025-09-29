@@ -134,6 +134,24 @@ if st.session_state.page == "login":
         submitted = colA.form_submit_button("チャット開始")
         new_conv   = colB.form_submit_button("新しい会話を始める（会話IDをリセット）")
 
+    if st.button("Google Sheets 権限チェック"):
+        import gspread
+        from google.oauth2.service_account import Credentials
+        sa = st.secrets["gcp_service_account"]
+        if isinstance(sa, str):
+            import json as _json; sa = _json.loads(sa)
+    st.write("Service Account:", sa.get("client_email"))
+    st.write("gsheet_id:", st.secrets["gsheet_id"])
+    creds = Credentials.from_service_account_info(sa, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    gc = gspread.authorize(creds)
+    try:
+        gc.open_by_key(st.secrets["gsheet_id"])
+        st.success("OK: シートを開けました（共有・IDともに正しい）")
+    except gspread.SpreadsheetNotFound:
+        st.error("NG: gsheet_id が違うか、シートが存在しません。")
+    except PermissionError:
+        st.error("NG: 権限がありません。上記サービスアカウントをシートに『編集者』で共有してください。")      
+        
         if submitted and name:
             if uploaded_file is not None:
                 st.session_state.user_avatar_data = uploaded_file.getvalue()
@@ -153,24 +171,6 @@ if st.session_state.page == "login":
             st.session_state.messages = []
             st.query_params.update({"page":"chat","cid":"","bot":bot_type,"name":st.session_state.name})
             st.rerun()
-
-        if st.button("Google Sheets 権限チェック"):
-            import gspread
-            from google.oauth2.service_account import Credentials
-            sa = st.secrets["gcp_service_account"]
-            if isinstance(sa, str):
-                import json as _json; sa = _json.loads(sa)
-            st.write("Service Account:", sa.get("client_email"))
-            st.write("gsheet_id:", st.secrets["gsheet_id"])
-            creds = Credentials.from_service_account_info(sa, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-            gc = gspread.authorize(creds)
-            try:
-                gc.open_by_key(st.secrets["gsheet_id"])
-                st.success("OK: シートを開けました（共有・IDともに正しい）")
-            except gspread.SpreadsheetNotFound:
-                st.error("NG: gsheet_id が違うか、シートが存在しません。")
-            except PermissionError:
-                st.error("NG: 権限がありません。上記サービスアカウントをシートに『編集者』で共有してください。")      
 
 # ========== STEP 2: チャット ==========
 elif st.session_state.page == "chat":
@@ -306,6 +306,7 @@ else:
         st.query_params.clear()
 
         st.rerun()
+
 
 
 
