@@ -158,7 +158,25 @@ if st.session_state.page == "login":
 elif st.session_state.page == "chat":
     st.markdown(f"#### 💬 {st.session_state.bot_type}")
     st.caption("同じ会話IDを共有すれば、全員で同じコンテキストを利用できます。")
-
+    
+    if st.button("Google Sheets 権限チェック"):
+        import gspread
+        from google.oauth2.service_account import Credentials
+        sa = st.secrets["gcp_service_account"]
+        if isinstance(sa, str):
+            import json as _json; sa = _json.loads(sa)
+        st.write("Service Account:", sa.get("client_email"))
+        st.write("gsheet_id:", st.secrets["gsheet_id"])
+        creds = Credentials.from_service_account_info(sa, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        gc = gspread.authorize(creds)
+        try:
+            gc.open_by_key(st.secrets["gsheet_id"])
+            st.success("OK: シートを開けました（共有・IDともに正しい）")
+        except gspread.SpreadsheetNotFound:
+            st.error("NG: gsheet_id が違うか、シートが存在しません。")
+        except PermissionError:
+            st.error("NG: 権限がありません。上記サービスアカウントをシートに『編集者』で共有してください。")      
+    
     # アバター
     assistant_avatar_file = PERSONA_AVATARS.get(st.session_state.bot_type, "default_assistant.png")
     user_avatar = st.session_state.get("user_avatar_data") if st.session_state.get("user_avatar_data") else "👤"
@@ -288,5 +306,6 @@ else:
         st.query_params.clear()
 
         st.rerun()
+
 
 
