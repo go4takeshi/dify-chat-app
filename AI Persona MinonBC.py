@@ -262,11 +262,3 @@ else:
         st.query_params.clear()
 
         st.rerun()
-
-sa = st.secrets["gcp_service_account"]
-if isinstance(sa, str):
-    import json as _json; sa = _json.loads(sa)
-st.info(f"SA email: {sa.get('client_email')}")
-
-
-
