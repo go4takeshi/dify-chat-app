@@ -153,12 +153,20 @@ elif st.session_state.page == "chat":
     st.code(share_link, language="text")
     st.link_button("共有リンクを開く", share_link)
     
-    # 共有リンク表示
-    cid_show = st.session_state.cid or "(未発行：最初の発話で採番されます)"
-    st.info(f"会話ID: `{cid_show}`")
-    if st.session_state.cid:
-        link = f"{base_url}?page=chat&cid={st.session_state.cid}&bot={st.session_state.bot_type}&name={st.session_state.name}"
-        st.code(link, language="text")
+# 共有リンク表示
+cid_show = st.session_state.cid or "(未発行：最初の発話で採番されます)"
+st.info(f"会話ID: `{cid_show}`")
+
+if st.session_state.cid:
+    params = {
+        "page": "chat",
+        "cid": st.session_state.cid,
+        "bot": st.session_state.bot_type,
+        "name": st.session_state.name,
+    }
+    share_link = f"?{urlencode(params)}"  # 相対リンク
+    st.code(share_link, language="text")
+    st.link_button("共有リンクを開く", share_link)
 
     # 履歴（Google Sheets）を読み込み & 画面に描画
     if st.session_state.cid:
@@ -254,4 +262,5 @@ else:
         st.query_params.clear()
 
         st.rerun()
+
 
