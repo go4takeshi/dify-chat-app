@@ -149,8 +149,8 @@ elif st.session_state.page == "chat":
         "name": st.session_state.name,
     }
     share_link = f"?{urlencode(params)}"
+    
     st.code(share_link, language="text")
-    # 便利ボタンも付けるなら
     st.link_button("共有リンクを開く", share_link)
     
     # 共有リンク表示
@@ -254,3 +254,4 @@ else:
         st.query_params.clear()
 
         st.rerun()
+
