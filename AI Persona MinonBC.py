@@ -46,23 +46,29 @@ def _open_sheet():
     import json as _json
     import gspread
     from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound
-    # 既存の _gs_client() を利用
+
     gc = _gs_client()
     sheet_id = st.secrets["gsheet_id"]
 
     try:
-        sh = gc.open_by_key(sheet_id)  # ← 権限なし/ID違いはここで落ちる
+        sh = gc.open_by_key(sheet_id)  # ← ここで 403 なら PermissionError
     except SpreadsheetNotFound:
         st.error("スプレッドシートが見つかりません。Secrets の gsheet_id を確認してください。")
         st.stop()
     except PermissionError:
-        # SAメールを表示して共有を促す
         sa = st.secrets["gcp_service_account"]
         if isinstance(sa, str):
             sa = _json.loads(sa)
-        st.error("アクセス権がありません。対象シートを下記のサービスアカウントに『編集者』で共有してください。")
+        st.error("アクセス権がありません。下記のサービスアカウントをシートの『編集者』で共有してください。")
         st.code(sa.get("client_email", "(unknown)"))
         st.stop()
+
+    try:
+        ws = sh.worksheet("chat_logs")
+    except WorksheetNotFound:
+        ws = sh.add_worksheet(title="chat_logs", rows=1000, cols=10)
+        ws.append_row(["timestamp","conversation_id","bot_type","role","name","content"])
+    return ws
 
     # ワークシート取得/作成
     try:
@@ -282,4 +288,5 @@ else:
         st.query_params.clear()
 
         st.rerun()
+
 
