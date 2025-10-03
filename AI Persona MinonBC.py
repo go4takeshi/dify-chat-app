@@ -163,7 +163,7 @@ if qp.get("page") and st.session_state.page != qp.get("page"):
 
 # ========== STEP 1: ログイン ==========
 if st.session_state.page == "login":
-    st.title("AIペルソナとグループでチャット（Dify チャットフロー）")
+    st.title("ミノンBCファンAIとグループでチャット")
 
     with st.form("user_info_form"):
         name = st.text_input("あなたの表示名", value=st.session_state.name or "")
@@ -379,3 +379,4 @@ else:
         st.session_state.cid = ""
         st.query_params.clear()
         st.rerun()
+
