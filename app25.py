@@ -3,6 +3,8 @@ import requests
 import uuid
 import json # jsonライブラリをインポート
 import os   # ファイルの存在を確認するためにosライブラリをインポート
+from datetime import datetime
+import pandas as pd
 
 # ----------------------------
 # Dify API設定
@@ -46,6 +48,10 @@ if "page" not in st.session_state:
     st.session_state.messages = []
     st.session_state.bot_type = "" # 選択されたボットの種類を保存
     st.session_state.user_avatar_data = None # ユーザーアバターのデータを保存
+    # CSV 関連のセッション変数
+    st.session_state.uploaded_csv_df = None
+    st.session_state.uploaded_csv_name = ""
+    st.session_state.attach_csv_next_message = False
 
 # ----------------------------
 # STEP 1：ユーザー情報入力画面
@@ -83,6 +89,22 @@ elif st.session_state.page == "chat":
     user_avatar = st.session_state.get("user_avatar_data") if st.session_state.get("user_avatar_data") is not None else "👤"
     assistant_avatar = assistant_avatar_file if os.path.exists(assistant_avatar_file) else "🤖"
 
+    # --- CSV アップロード UI ---
+    uploaded_csv = st.file_uploader("CSV をアップロードしてチャットに読み込む（任意）", type=["csv"])
+    if uploaded_csv is not None:
+        try:
+            df = pd.read_csv(uploaded_csv)
+            st.session_state.uploaded_csv_df = df
+            st.session_state.uploaded_csv_name = getattr(uploaded_csv, "name", "uploaded.csv")
+            st.success(f"CSV を読み込みました: {st.session_state.uploaded_csv_name} （{len(df)} 行）")
+            st.dataframe(df.head(10))
+            # 添付オプション
+            st.session_state.attach_csv_next_message = st.checkbox("次のメッセージにこのCSVの内容を含める（先頭100行まで）", value=st.session_state.attach_csv_next_message)
+        except Exception as e:
+            st.error(f"CSV の読み込みに失敗しました: {e}")
+            st.session_state.uploaded_csv_df = None
+            st.session_state.uploaded_csv_name = ""
+
     # ▼▼▼ 修正点 ▼▼▼
     # 条件を "？" から "🤖" に修正しました
     if assistant_avatar == "🤖":
@@ -91,12 +113,17 @@ elif st.session_state.page == "chat":
     for msg in st.session_state.messages:
         current_avatar = assistant_avatar if msg["role"] == "assistant" else user_avatar
         with st.chat_message(msg["role"], avatar=current_avatar):
+            # メッセージにタイムスタンプがあれば表示（簡易）
+            ts = msg.get("timestamp")
+            if ts:
+                st.caption(ts)
             st.markdown(msg["content"])
 
     if user_input := st.chat_input("メッセージを入力してください"):
+        now = datetime.now().isoformat()
         with st.chat_message("user", avatar=user_avatar):
             st.markdown(user_input)
-        st.session_state.messages.append({"role": "user", "content": user_input})
+        st.session_state.messages.append({"role": "user", "content": user_input, "timestamp": now})
 
         current_api_key = PERSONA_API_KEYS.get(st.session_state.bot_type)
 
@@ -108,12 +135,28 @@ elif st.session_state.page == "chat":
                 "Content-Type": "application/json"
             }
             
+            # payload に CSV を含める場合は inputs に追加する（先頭100行に制限）
+            inputs = {}
+            if st.session_state.get("attach_csv_next_message") and st.session_state.get("uploaded_csv_df") is not None:
+                df = st.session_state.uploaded_csv_df
+                truncated = df.head(100)
+                try:
+                    csv_text = truncated.to_csv(index=False)
+                except Exception:
+                    # 非標準のエンコーディングなどがある場合は粗いフォールバック
+                    csv_text = truncated.astype(str).to_csv(index=False)
+                inputs["csv"] = csv_text
+                # ローカルチャット履歴にも注記を残す
+                st.session_state.messages.append({"role": "system", "content": f"CSV を添付: {st.session_state.uploaded_csv_name}（先頭 {len(truncated)} 行）", "timestamp": datetime.now().isoformat()})
+                # 添付が済んだらオプションを解除する（任意）
+                st.session_state.attach_csv_next_message = False
+
             payload = {
-                "inputs": {},
+                "inputs": inputs,
                 "query": user_input,
                 "user": "streamlit-user",
                 "conversation_id": st.session_state.cid,
-                "response_mode": "blocking", 
+                "response_mode": "blocking",
             }
 
             with st.chat_message("assistant", avatar=assistant_avatar):
@@ -136,6 +179,7 @@ elif st.session_state.page == "chat":
                         
                         st.markdown(answer)
 
+                # --- レスポンスをタイムスタンプ付きで保存 ---
                 except requests.exceptions.HTTPError as e:
                     error_response = e.response
                     error_details = f"Status Code: {error_response.status_code}\n"
@@ -146,7 +190,17 @@ elif st.session_state.page == "chat":
                     answer = f"⚠️ 不明なエラーが発生しました：\n\n{e}"
                     st.markdown(answer)
 
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+            # assistant のメッセージにもタイムスタンプを付与して保存
+            st.session_state.messages.append({"role": "assistant", "content": answer, "timestamp": datetime.now().isoformat()})
+            
+            # --- チャット履歴をCSVでダウンロードするボタン ---
+            try:
+                df_log = pd.DataFrame([{"timestamp": m.get("timestamp", ""), "role": m.get("role", ""), "content": m.get("content", "")} for m in st.session_state.messages])
+                csv_bytes = df_log.to_csv(index=False).encode("utf-8")
+                st.download_button("チャットをCSVでダウンロード", data=csv_bytes, file_name="chat_logs.csv", mime="text/csv")
+            except Exception:
+                # 何か問題があってもUIを壊さない
+                pass
 
 # ----------------------------
 # ページパラメータが不正な場合の表示
