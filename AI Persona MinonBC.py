@@ -168,7 +168,7 @@ if st.session_state.page == "login":
     with st.form("user_info_form"):
         name = st.text_input("あなたの表示名", value=st.session_state.name or "")
         bot_type = st.selectbox(
-            "対話するミノンBCファンAI",
+            "対話するミノンＢＣファンＡＩ",
             list(PERSONA_API_KEYS.keys()),
             index=(list(PERSONA_API_KEYS.keys()).index(st.session_state.bot_type)
                    if st.session_state.bot_type in PERSONA_API_KEYS else 0),
@@ -379,6 +379,7 @@ else:
         st.session_state.cid = ""
         st.query_params.clear()
         st.rerun()
+
 
 
 
