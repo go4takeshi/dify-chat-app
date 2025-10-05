@@ -212,4 +212,4 @@ else:
         st.session_state.cid = ""
         st.query_params.clear()
 
-    st.rerun()
+        st.rerun()
