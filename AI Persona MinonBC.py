@@ -149,6 +149,11 @@ if "page" not in st.session_state:
     st.session_state.user_avatar_data = None
     st.session_state.name = ""
 
+    # CSV 関連のセッション変数
+    st.session_state.uploaded_csv_df = None
+    st.session_state.uploaded_csv_name = ""
+    st.session_state.attach_csv_next_message = False
+
 # クエリから復元（共有リンク用）
 qp = st.query_params
 if qp.get("cid") and not st.session_state.cid:
@@ -274,6 +279,22 @@ elif st.session_state.page == "chat":
     user_avatar = st.session_state.get("user_avatar_data") if st.session_state.get("user_avatar_data") else "👤"
     assistant_avatar = assistant_avatar_file if os.path.exists(assistant_avatar_file) else "🤖"
 
+    # --- CSV アップロード UI ---
+    uploaded_csv = st.file_uploader("CSV をアップロードしてチャットに読み込む（任意）", type=["csv"])
+    if uploaded_csv is not None:
+        try:
+            df = pd.read_csv(uploaded_csv)
+            st.session_state.uploaded_csv_df = df
+            st.session_state.uploaded_csv_name = getattr(uploaded_csv, "name", "uploaded.csv")
+            st.success(f"CSV を読み込みました: {st.session_state.uploaded_csv_name} （{len(df)} 行）")
+            st.dataframe(df.head(10))
+            # 添付オプション
+            st.session_state.attach_csv_next_message = st.checkbox("次のメッセージにこのCSVの内容を含める（先頭100行まで）", value=st.session_state.get("attach_csv_next_message", False))
+        except Exception as e:
+            st.error(f"CSV の読み込みに失敗しました: {e}")
+            st.session_state.uploaded_csv_df = None
+            st.session_state.uploaded_csv_name = ""
+
     # 履歴（Sheets）を読み込み & 表示
     if st.session_state.cid:
         try:
@@ -318,8 +339,22 @@ elif st.session_state.page == "chat":
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             }
+
+            # payload に CSV を含める場合は inputs に追加する（先頭100行に制限）
+            inputs = {}
+            if st.session_state.get("attach_csv_next_message") and st.session_state.get("uploaded_csv_df") is not None:
+                df = st.session_state.uploaded_csv_df
+                truncated = df.head(100)
+                try:
+                    csv_text = truncated.to_csv(index=False)
+                except Exception:
+                    csv_text = truncated.astype(str).to_csv(index=False)
+                inputs["csv"] = csv_text
+                # 添付が済んだらオプションを解除する
+                st.session_state.attach_csv_next_message = False
+
             payload = {
-                "inputs": {},  # 既存の conversation_id がある場合 inputs は無視される
+                "inputs": inputs,
                 "query": user_input,
                 "user": st.session_state.name or "streamlit-user",
                 "conversation_id": st.session_state.cid,
@@ -354,6 +389,14 @@ elif st.session_state.page == "chat":
             save_log(st.session_state.cid, st.session_state.bot_type, "assistant", st.session_state.bot_type, answer)
         except Exception as e:
             st.warning(f"スプレッドシート保存に失敗（assistant）：{e}")
+        
+        # --- チャット履歴をCSVでダウンロードするボタン ---
+        try:
+            df_log = pd.DataFrame([{"timestamp": m.get("timestamp", ""), "role": m.get("role", ""), "content": m.get("content", "")} for m in st.session_state.messages])
+            csv_bytes = df_log.to_csv(index=False).encode("utf-8")
+            st.download_button("チャットをCSVでダウンロード", data=csv_bytes, file_name="chat_logs.csv", mime="text/csv", key=f"dl_{len(st.session_state.messages)}")
+        except Exception:
+            pass
 
     # 操作ボタン
     col1, col2, col3 = st.columns(3)
@@ -379,10 +422,3 @@ else:
         st.session_state.cid = ""
         st.query_params.clear()
         st.rerun()
-
-
-
-
-
-
-
