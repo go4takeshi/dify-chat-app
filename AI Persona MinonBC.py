@@ -1,21 +1,31 @@
+"""Cleaned app.py - unified version without merge markers.
 
-# -*- coding: utf-8 -*-
-import os
-import json
-import time
+Features:
+- Persona selection (API keys via Streamlit secrets)
+- Conversation resume via conversation_id (query param)
+- CSV upload and attach (head(100))
+- Google Sheets logging (optional, via service account in secrets)
+- Chat history export: normal CSV or keyword-split CSV using utils.prepare_keyword_split_csv
+"""
+
 from datetime import datetime, timezone
+import io
+import json
+import os
+import time
 from urllib.parse import urlencode
 
-import requests
 import pandas as pd
+import requests
 import streamlit as st
 
-# =========================
-# Dify 設定
-# =========================
+from utils import prepare_keyword_split_csv
+
+
+# Constants
 DIFY_CHAT_URL = "https://api.dify.ai/v1/chat-messages"
 
-# ペルソナの表示名とSecretsのキーをマッピング
+# Personas
 PERSONA_NAMES = [
     "①ミノンBC理想ファン_乳児ママ_本田ゆい（30）",
     "②ミノンBC理想ファン_乳児パパ_安西涼太（31）",
@@ -27,35 +37,23 @@ PERSONA_NAMES = [
     "⑧ミノンBC未満ファン_更年期女性_杉山紀子（51）",
 ]
 
+
 def get_persona_api_keys():
-    """SecretsからAPIキーを読み込む"""
     keys = {}
-    for i, name in enumerate(PERSONA_NAMES):
-        key = st.secrets.get(f"PERSONA_{i+1}_KEY")
-        if key:
-            keys[name] = key
+    for i, _ in enumerate(PERSONA_NAMES):
+        k = st.secrets.get(f"PERSONA_{i+1}_KEY")
+        if k:
+            keys[PERSONA_NAMES[i]] = k
     return keys
+
 
 PERSONA_API_KEYS = get_persona_api_keys()
 
-# アバター
-PERSONA_AVATARS = {
-    "①ミノンBC理想ファン_乳児ママ_本田ゆい（30）": "persona_1.jpg",
-    "②ミノンBC理想ファン_乳児パパ_安西涼太（31）": "persona_2.jpg",
-    "③ミノンBC理想ファン_保育園/幼稚園ママ_戸田綾香（35）": "persona_3.jpg",
-    "④ミノンBC理想ファン_更年期女性_高橋恵子（48）": "persona_4.jpg",
-    "⑤ミノンBC未満ファン_乳児ママ_中村優奈（31）": "persona_5.jpg",
-    "⑥ミノンBC未満ファン_乳児パパ_岡田健志（32）": "persona_6.jpg",
-    "⑦ミノンBC未満ファン_保育園・幼稚園ママ_石田真帆（34）": "persona_7.png",
-    "⑧ミノンBC未満ファン_更年期女性_杉山紀子（51）": "persona_8.jpg",
-}
+PERSONA_AVATARS = {PERSONA_NAMES[i]: f"persona_{i+1}.jpg" for i in range(len(PERSONA_NAMES))}
 
 
-# =========================
-# Google Sheets 接続ユーティリティ
-# =========================
+# Google Sheets helpers
 def _get_sa_dict():
-    """Secretsの gcp_service_account から dict を返す（JSON文字列/TOMLテーブル両対応）"""
     if "gcp_service_account" not in st.secrets:
         return None
     raw = st.secrets["gcp_service_account"]
@@ -63,7 +61,6 @@ def _get_sa_dict():
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            # private_key の実改行を \n に自動補正して再トライ（貼付ミス救済）
             fixed = raw.replace("\r\n", "\n").replace("\n", "\\n")
             return json.loads(fixed)
     return dict(raw)
@@ -71,7 +68,6 @@ def _get_sa_dict():
 
 @st.cache_resource
 def _gs_client():
-    """gspread クライアントを返す（キャッシュする）"""
     import gspread
     from google.oauth2.service_account import Credentials
 
@@ -86,7 +82,6 @@ def _gs_client():
 
 
 def _open_sheet():
-    """chat_logs ワークシートを開く（なければ作成）。権限/IDエラーはUI表示して停止。"""
     import gspread
     from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound, GSpreadException
 
@@ -120,13 +115,10 @@ def _open_sheet():
 
 
 def save_log(conversation_id: str, bot_type: str, role: str, name: str, content: str):
-    """一行追記（指数バックオフの簡易リトライ付き）"""
     from gspread.exceptions import APIError
-
     try:
         ws = _open_sheet()
         row = [datetime.now(timezone.utc).isoformat(), conversation_id, bot_type, role, name, content]
-
         for i in range(5):
             try:
                 ws.append_row(row, value_input_option="RAW")
@@ -142,16 +134,14 @@ def save_log(conversation_id: str, bot_type: str, role: str, name: str, content:
         st.warning(f"Google Sheetsへのログ保存中にエラーが発生しました: {e}")
 
 
-@st.cache_data(ttl=60)  # ライブ更新のため短めのTTL
+@st.cache_data(ttl=60)
 def load_history(conversation_id: str) -> pd.DataFrame:
-    """指定された会話IDの履歴をGoogle Sheetsから読み込む"""
     try:
         ws = _open_sheet()
         data = ws.get_all_records()
         df = pd.DataFrame(data)
         if df.empty:
             return pd.DataFrame(columns=["timestamp", "conversation_id", "bot_type", "role", "name", "content"])
-
         df_filtered = df[df["conversation_id"] == conversation_id].copy()
         if not df_filtered.empty and "timestamp" in df_filtered.columns:
             df_filtered["timestamp"] = pd.to_datetime(df_filtered["timestamp"], errors="coerce", utc=True)
@@ -162,12 +152,10 @@ def load_history(conversation_id: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-# =========================
 # Streamlit UI
-# =========================
 st.set_page_config(page_title="ミノンBC AIファンチャット", layout="centered")
 
-# --- session_stateの初期化 ---
+
 def init_session_state():
     st.session_state.page = "login"
     st.session_state.cid = ""
@@ -178,11 +166,14 @@ def init_session_state():
     st.session_state.uploaded_csv_df = None
     st.session_state.uploaded_csv_name = ""
     st.session_state.attach_csv_next_message = False
+    # default number of CSV rows to attach when including CSV in a message
+    st.session_state.csv_attach_rows = 100
+
 
 if "page" not in st.session_state:
     init_session_state()
 
-# --- クエリパラメータから復元（共有リンク用） ---
+
 def restore_from_query_params():
     qp = st.query_params
     if qp.get("page") == "chat":
@@ -190,19 +181,16 @@ def restore_from_query_params():
         st.session_state.cid = qp.get("cid", "")
         st.session_state.bot_type = qp.get("bot", "")
         st.session_state.name = qp.get("name", "")
-        # ページ遷移時にクエリパラメータをクリアして、再読み込みループを防ぐ
         st.query_params.clear()
         st.rerun()
+
 
 if st.session_state.page == "login" and st.query_params.get("page") == "chat":
     restore_from_query_params()
 
 
-# ========== STEP 1: ログイン画面 ==========
 if st.session_state.page == "login":
     st.title("ミノンBC AIファンとの対話")
-
-    # APIキーが一つも設定されていない場合はエラー表示
     if not PERSONA_API_KEYS:
         st.error("APIキーが一つも設定されていません。Streamlit CloudのSecretsに `PERSONA_1_KEY` などを設定してください。")
         st.stop()
@@ -230,18 +218,15 @@ if st.session_state.page == "login":
                 st.session_state.user_avatar_data = uploaded_file.getvalue()
             else:
                 st.session_state.user_avatar_data = None
-
             st.session_state.messages = []
             st.session_state.page = "chat"
             st.rerun()
 
 
-# ========== STEP 2: チャット画面 ==========
 elif st.session_state.page == "chat":
     st.markdown(f"#### 💬 {st.session_state.bot_type}")
     st.caption("同じ会話IDを共有すれば、複数人で同じ会話に参加できます。")
 
-    # --- 共有リンク表示 ---
     cid_show = st.session_state.cid or "(未発行：最初の発話で採番)"
     st.info(f"会話ID: `{cid_show}`")
     if st.session_state.cid:
@@ -251,7 +236,6 @@ elif st.session_state.page == "chat":
             "bot": st.session_state.bot_type,
             "name": st.session_state.name,
         }
-        # Streamlit CloudのベースURLを取得（ローカルでは動作しない場合がある）
         try:
             from streamlit.web.server.server import Server
             base_url = Server.get_current()._get_base_url()
@@ -259,21 +243,17 @@ elif st.session_state.page == "chat":
             share_link = f"{full_url}?{urlencode(params)}"
             st.code(share_link, language="text")
         except (ImportError, AttributeError):
-            # ローカル環境や取得失敗時のフォールバック
             share_link = f"?{urlencode(params)}"
             st.code(share_link, language="text")
 
-    # --- アバター設定 ---
     assistant_avatar_file = PERSONA_AVATARS.get(st.session_state.bot_type, "default_assistant.png")
     user_avatar = st.session_state.get("user_avatar_data") if st.session_state.get("user_avatar_data") else "👤"
     assistant_avatar = assistant_avatar_file if os.path.exists(assistant_avatar_file) else "🤖"
-
     if assistant_avatar == "🤖":
         st.info(f"アシスタントのアバター画像（{assistant_avatar_file}）が見つかりません。カスタムアイコンを表示するには、リポジトリのルートに画像を配置してください。")
 
-    # --- CSV アップロード UI ---
     with st.expander("CSVをアップロードしてチャットで利用する"):
-        uploaded_csv = st.file_uploader("CSVファイルを選択", type=["csv"])
+        uploaded_csv = st.file_uploader("CSVファイルを選択", type=["csv"] )
         if uploaded_csv is not None:
             try:
                 df = pd.read_csv(uploaded_csv)
@@ -281,16 +261,23 @@ elif st.session_state.page == "chat":
                 st.session_state.uploaded_csv_name = getattr(uploaded_csv, "name", "uploaded.csv")
                 st.success(f"CSVを読み込みました: {st.session_state.uploaded_csv_name} ({len(df)} 行)")
                 st.dataframe(df.head(10))
+                # let the user choose how many head rows to attach (cap 1000 for safety)
+                max_cap = min(1000, max(1, len(df)))
+                st.session_state.csv_attach_rows = st.slider(
+                    "チャットに含めるCSVの先頭行数",
+                    min_value=1,
+                    max_value=max_cap,
+                    value=st.session_state.get("csv_attach_rows", 100),
+                )
                 st.session_state.attach_csv_next_message = st.checkbox(
-                    "次のメッセージにこのCSVの内容を含める（先頭100行まで）",
+                    f"次のメッセージにこのCSVの内容を含める（先頭{st.session_state.csv_attach_rows}行まで）",
                     value=st.session_state.get("attach_csv_next_message", False)
                 )
             except Exception as e:
                 st.error(f"CSVの読み込みに失敗しました: {e}")
                 st.session_state.uploaded_csv_df = None
 
-    # --- 履歴表示 ---
-    # 1. Google Sheetsから履歴を読み込み
+    # 履歴をGoogle Sheetsから読み込んで表示
     if st.session_state.cid and not st.session_state.messages:
         history_df = load_history(st.session_state.cid)
         if not history_df.empty:
@@ -298,59 +285,60 @@ elif st.session_state.page == "chat":
                 st.session_state.messages.append({
                     "role": row["role"],
                     "content": row["content"],
-                    "name": row["name"]
+                    "name": row["name"],
                 })
 
-    # 2. st.session_state.messages を表示
     for msg in st.session_state.messages:
-        role = msg["role"]
+        role = msg.get("role", "")
         name = msg.get("name", role)
         avatar = assistant_avatar if role == "assistant" else user_avatar
         with st.chat_message(name, avatar=avatar):
-            st.markdown(msg["content"])
+            st.markdown(msg.get("content", ""))
 
-    # --- チャット入力 ---
     if user_input := st.chat_input("メッセージを入力してください"):
-        # ユーザーメッセージを即時表示
         user_message = {"role": "user", "content": user_input, "name": st.session_state.name}
         st.session_state.messages.append(user_message)
         with st.chat_message(st.session_state.name, avatar=user_avatar):
             st.markdown(user_input)
 
-        # ユーザーメッセージをログに保存
         save_log(
             st.session_state.cid or "(allocating...)",
             st.session_state.bot_type,
             "user",
             st.session_state.name,
-            user_input
+            user_input,
         )
 
-        # --- Dify APIへリクエスト ---
         api_key = PERSONA_API_KEYS.get(st.session_state.bot_type)
         if not api_key:
             st.error("選択されたペルソナのAPIキーが未設定です。")
             st.stop()
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
         inputs = {}
         if st.session_state.get("attach_csv_next_message") and st.session_state.get("uploaded_csv_df") is not None:
             df = st.session_state.uploaded_csv_df
-            truncated = df.head(100)
+            n = st.session_state.get("csv_attach_rows", 100)
+            truncated = df.head(n)
             try:
                 csv_text = truncated.to_csv(index=False)
             except Exception:
                 csv_text = truncated.astype(str).to_csv(index=False)
             inputs["csv"] = csv_text
-            st.session_state.attach_csv_next_message = False # 添付後はチェックを外す
+            st.session_state.attach_csv_next_message = False
+
+        # Ensure the LLM actually sees the CSV: include a short marker and the CSV head in the query
+        query_text = user_input
+        if "csv" in inputs and inputs["csv"]:
+            # keep the query reasonably concise but include the CSV head so the model can reference it
+            csv_preview = inputs["csv"]
+            # Optionally trim preview to avoid extremely long queries (here we keep it as-is since truncated already)
+            query_text = f"{user_input}\n\n[ATTACHED_CSV - first {len(truncated)} rows]\n{csv_preview}"
 
         payload = {
             "inputs": inputs,
-            "query": user_input,
+            "query": query_text,
             "user": st.session_state.name,
             "conversation_id": st.session_state.cid,
             "response_mode": "blocking",
@@ -365,7 +353,6 @@ elif st.session_state.page == "chat":
                     rj = res.json()
                     answer = rj.get("answer", "⚠️ 応答がありませんでした。")
 
-                    # 新規会話IDが発行されたら保存
                     new_cid = rj.get("conversation_id")
                     if new_cid and not st.session_state.cid:
                         st.session_state.cid = new_cid
@@ -383,7 +370,6 @@ elif st.session_state.page == "chat":
                 answer = f"⚠️ 不明なエラーが発生しました: {e}"
                 st.error(answer)
 
-        # アシスタントの応答を保存
         if answer:
             assistant_message = {"role": "assistant", "content": answer, "name": st.session_state.bot_type}
             st.session_state.messages.append(assistant_message)
@@ -392,44 +378,68 @@ elif st.session_state.page == "chat":
                 st.session_state.bot_type,
                 "assistant",
                 st.session_state.bot_type,
-                answer
+                answer,
             )
-        
-        # 画面を再実行して、共有リンクやダウンロードボタンを更新
+
         st.rerun()
 
-    # --- 操作ボタン ---
     st.markdown("---")
-    
-    # チャット履歴ダウンロードボタン
     if st.session_state.messages:
         try:
             df_log = pd.DataFrame(st.session_state.messages)
-            csv_bytes = df_log.to_csv(index=False).encode("utf-8-sig") # Excelでの文字化け対策
-            st.download_button(
-                "チャット履歴をCSVでダウンロード",
-                data=csv_bytes,
-                file_name=f"chat_log_{st.session_state.cid}.csv",
-                mime="text/csv",
-            )
+            csv_bytes = df_log.to_csv(index=False).encode("utf-8-sig")
+
+            # detect actual maximum number of keywords present in assistant messages
+            max_present = 0
+            for m in st.session_state.messages:
+                if m.get("role") == "assistant":
+                    kws = [k.strip() for k in str(m.get("content", "")).splitlines() if k.strip()]
+                    if len(kws) > max_present:
+                        max_present = len(kws)
+
+            # determine slider upper bound: at least 1, capped at 150
+            slider_max = max(1, min(150, max_present))
+            default_val = min(100, slider_max)
+            if max_present == 0:
+                st.caption("キーワード分割時の最大列数を指定（履歴内に検出されたキーワードはありません。デフォルト値を使用してください。）")
+            else:
+                st.caption(f"キーワード分割時の最大列数を指定（検出された最大: {max_present}、デフォルト {default_val}、上限 150）")
+
+            max_kw_ui = st.slider("最大キーワード数", min_value=1, max_value=slider_max, value=default_val)
+
+            download_format = st.radio("ダウンロード形式を選択", ("通常", "キーワード分割"), index=0, horizontal=True)
+
+            if download_format == "通常":
+                try:
+                    st.caption("通常形式: role / name / content を含むプレビュー")
+                    st.dataframe(df_log.head(50))
+                except Exception:
+                    st.write("プレビューの表示に失敗しました（通常）。")
+                st.download_button("CSVをダウンロード", data=csv_bytes, file_name=f"chat_log_{st.session_state.cid}.csv", mime="text/csv")
+            else:
+                try:
+                    csv_kw_bytes = prepare_keyword_split_csv(st.session_state.messages, max_keywords=max_kw_ui)
+                    df_preview = pd.read_csv(io.BytesIO(csv_kw_bytes))
+                    st.caption("キーワード分割プレビュー: assistant の content を改行で分割して keyword_1.. に配置")
+                    st.dataframe(df_preview.head(50))
+                    st.download_button("CSVをダウンロード（キーワード分割）", data=csv_kw_bytes, file_name=f"chat_log_keywords_{st.session_state.cid}.csv", mime="text/csv")
+                except Exception as e:
+                    st.warning(f"キーワード分割CSVの準備中にエラー: {e}")
         except Exception as e:
             st.warning(f"CSVダウンロードの準備中にエラー: {e}")
 
     col1, col2 = st.columns(2)
     if col1.button("新しい会話を始める"):
-        # 現在のユーザー名とボットタイプは維持しつつ、会話IDとメッセージをリセット
         st.session_state.cid = ""
         st.session_state.messages = []
         st.success("新しい会話を開始します。")
-        time.sleep(1) # メッセージ表示のためのウェイト
+        time.sleep(1)
         st.rerun()
 
     if col2.button("ログアウトして最初に戻る"):
-        # 全てのセッション情報をクリア
         init_session_state()
         st.rerun()
 
-# ========== フォールバック ==========
 else:
     st.error("不正なページ状態です。")
     if st.button("最初のページに戻る"):
