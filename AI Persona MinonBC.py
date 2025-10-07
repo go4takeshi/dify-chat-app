@@ -30,7 +30,6 @@ PERSONA_API_KEYS = {
 
 # Secrets 側に [persona_api_keys] を置いている場合は上書き（任意）
 if "persona_api_keys" in st.secrets:
-    # 表示名をキーにしている場合のみ上書き（スラグ管理にするなら適宜改修）
     PERSONA_API_KEYS.update(dict(st.secrets["persona_api_keys"]))
 
 # アバター
@@ -49,6 +48,7 @@ PERSONA_AVATARS = {
 # =========================
 # Google Sheets 接続ユーティリティ
 # =========================
+
 def _get_sa_dict():
     """Secretsの gcp_service_account から dict を返す（JSON文字列/TOMLテーブル両対応）"""
     raw = st.secrets["gcp_service_account"]
@@ -122,13 +122,18 @@ def save_log(conversation_id: str, bot_type: str, role: str, name: str, content:
 
 
 @st.cache_data(ttl=3)  # 軽めのライブ更新
-def load_history(conversation_id: str) -> pd.DataFrame:
+def load_history(conversation_id: str, bot_type: str | None = None) -> pd.DataFrame:
+    """会話IDに対する履歴。bot_type が指定されれば複合キーで絞る"""
     ws = _open_sheet()
     data = ws.get_all_records()
     df = pd.DataFrame(data)
     if df.empty:
         return df
+
     df = df[df["conversation_id"] == conversation_id].copy()
+    if bot_type is not None and "bot_type" in df.columns:
+        df = df[df["bot_type"] == bot_type].copy()
+
     if not df.empty and "timestamp" in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         df = df.sort_values("timestamp")
@@ -167,11 +172,16 @@ if st.session_state.page == "login":
 
     with st.form("user_info_form"):
         name = st.text_input("あなたの表示名", value=st.session_state.name or "")
+
+        # 共有リンク経由などで既に cid が入っていれば選択不可にする
+        lock_bot = bool(st.session_state.cid)
+
         bot_type = st.selectbox(
             "対話するミノンＢＣファンＡＩ",
             list(PERSONA_API_KEYS.keys()),
             index=(list(PERSONA_API_KEYS.keys()).index(st.session_state.bot_type)
                    if st.session_state.bot_type in PERSONA_API_KEYS else 0),
+            disabled=lock_bot,  # ← 共有IDがあるときは固定
         )
         existing_cid = st.text_input("既存の会話ID（共有リンクで参加する場合に貼付）", value=st.session_state.cid or "")
         uploaded_file = st.file_uploader("あなたのアバター画像（任意）", type=["png", "jpg", "jpeg"])
@@ -232,6 +242,21 @@ if st.session_state.page == "login":
 
 # ========== STEP 2: チャット ==========
 elif st.session_state.page == "chat":
+    # ---- 会話IDがある場合は、そのIDの元ペルソナに自動切替（履歴表示より前に） ----
+    if st.session_state.cid:
+        try:
+            df_any = load_history(st.session_state.cid, bot_type=None)
+            if not df_any.empty and "bot_type" in df_any.columns:
+                series = df_any["bot_type"].dropna()
+                if not series.empty:
+                    cid_bot = series.mode().iloc[0]
+                    if cid_bot and st.session_state.bot_type != cid_bot:
+                        st.warning(f"この会話IDは『{cid_bot}』で作成されています。ペルソナを合わせます。")
+                        st.session_state.bot_type = cid_bot
+                        st.query_params.update({"bot": cid_bot})
+        except Exception:
+            st.info("会話IDのペルソナ自動判定に失敗しました（初回や未保存時は問題ありません）。")
+
     st.markdown(f"#### 💬 {st.session_state.bot_type}")
     st.caption("同じ会話IDを共有すれば、全員で同じコンテキストを利用できます。")
 
@@ -274,10 +299,10 @@ elif st.session_state.page == "chat":
     user_avatar = st.session_state.get("user_avatar_data") if st.session_state.get("user_avatar_data") else "👤"
     assistant_avatar = assistant_avatar_file if os.path.exists(assistant_avatar_file) else "🤖"
 
-    # 履歴（Sheets）を読み込み & 表示
+    # 履歴（Sheets）を読み込み & 表示（複合キーで絞る）
     if st.session_state.cid:
         try:
-            df = load_history(st.session_state.cid)
+            df = load_history(st.session_state.cid, st.session_state.bot_type)
             for _, r in df.iterrows():
                 avatar = assistant_avatar if r["role"] == "assistant" else user_avatar
                 with st.chat_message(r["role"], avatar=avatar):
@@ -333,11 +358,18 @@ elif st.session_state.page == "chat":
                         rj = res.json()
                         answer = rj.get("answer", "⚠️ 応答がありませんでした。")
 
-                        # 新規会話IDの採番
+                        # 新規会話IDの採番・上書き判定（重要な変更）
                         new_cid = rj.get("conversation_id")
-                        if new_cid:
-                            st.session_state.cid = new_cid
-                            st.query_params.update({"cid": new_cid})
+                        if (st.session_state.cid and new_cid and new_cid != st.session_state.cid):
+                            st.error(
+                                "この会話IDは現在選択中のペルソナでは引き継げません。"
+                                "共有元と同じペルソナ（＝同じAPIキーのアプリ）を選んでください。"
+                            )
+                            # 上書きしない
+                        else:
+                            if new_cid and not st.session_state.cid:
+                                st.session_state.cid = new_cid
+                                st.query_params.update({"cid": new_cid})
 
                         st.markdown(answer)
                 except requests.exceptions.HTTPError as e:
