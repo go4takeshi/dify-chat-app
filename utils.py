@@ -18,11 +18,11 @@ def prepare_keyword_split_csv(messages, max_keywords=100000):
         content = m.get("content", "")
         if role == "assistant":
             kws = [k.strip() for k in str(content).splitlines() if k.strip()]
-            if len(kws) > max_keywords:
-                remaining = len(kws) - max_keywords
-                kws = kws[:max_keywords]
-                if kws:
-                    kws[-1] = f"{kws[-1]} (...+{remaining} truncated)"
+            #if len(kws) > max_keywords:
+            #    remaining = len(kws) - max_keywords
+            #    kws = kws[:max_keywords]
+            #    if kws:
+            #        kws[-1] = f"{kws[-1]} (...+{remaining} truncated)"
         else:
             kws = []
         rows.append({"role": role, "name": name, "content": content, "_kws": kws})
@@ -41,6 +41,7 @@ def prepare_keyword_split_csv(messages, max_keywords=100000):
     df_out.to_csv(buf, index=False)
 
     return buf.getvalue().encode("utf-8-sig")
+
 
 
 
