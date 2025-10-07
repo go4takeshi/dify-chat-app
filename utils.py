@@ -2,7 +2,7 @@ import io
 import pandas as pd
 
 
-def prepare_keyword_split_csv(messages):
+def prepare_keyword_split_csv(messages, max_keywords=100000):
     """messages: list of dicts with keys role, content, name
 
     - Keep role,name,content columns
@@ -41,5 +41,6 @@ def prepare_keyword_split_csv(messages):
     df_out.to_csv(buf, index=False)
 
     return buf.getvalue().encode("utf-8-sig")
+
 
 
