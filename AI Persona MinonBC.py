@@ -401,3 +401,26 @@ elif st.session_state.page == "chat":
         st.session_state.messages = []
         st.query_params.clear()
         st.rerun()
+
+with st.expander("🔧 Google Sheets 診断", expanded=False):
+    ok = True
+    try:
+        ws = _open_sheet()
+        st.write("ワークシート一覧:", [w.title for w in ws.spreadsheet.worksheets()])
+        header = ws.row_values(1)
+        st.write("先頭行(ヘッダー):", header)
+        values = ws.get_all_values()
+        st.write(f"総行数: {len(values)}")
+        st.write("末尾3行:", values[-3:] if len(values) >= 3 else values)
+    except Exception as e:
+        ok = False
+        st.error(f"診断: 読み取りに失敗 → {e}")
+
+    if ok and st.button("このシートにテスト行を追加"):
+        try:
+            test_row = [datetime.now(timezone.utc).isoformat(), "DIAG_TEST", "diag_bot", "user", "tester", "ping"]
+            ws.append_row(test_row, value_input_option="USER_ENTERED")
+            st.success("テスト行を追加しました。『末尾3行』に DIAG_TEST が見えるか確認してください。")
+        except Exception as e:
+            st.error(f"診断: 書き込みに失敗 → {e}")
+
