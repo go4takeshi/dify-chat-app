@@ -15,24 +15,24 @@ import streamlit as st
 # =========================
 DIFY_CHAT_URL = "https://api.dify.ai/v1/chat-messages"
 
-# ▼▼▼【ここのチェックを一時的に変更】▼▼▼
-if "test_message" in st.secrets:
-    st.success(st.secrets.test_message)
-else:
-    st.error("テスト用のキー 'test_message' が見つかりません。")
-st.stop() # ここで一度処理を止めて確認する
-# ▲▲▲【ここまで変更】▲▲▲
+## ▼▼▼【ここのチェックを一時的に変更】▼▼▼
+#if "test_message" in st.secrets:
+#    st.success(st.secrets.test_message)
+#else:
+#    st.error("テスト用のキー 'test_message' が見つかりません。")
+#st.stop() # ここで一度処理を止めて確認する
+## ▲▲▲【ここまで変更】▲▲▲
 
-## 必須 Secrets チェック
-#if "persona_api_keys" not in st.secrets:
-#    st.error("Secrets に persona_api_keys がありません。 .streamlit/secrets.toml を設定してください。")
-#    st.stop()
-#if "gcp_service_account" not in st.secrets:
-#    st.error("Secrets に gcp_service_account がありません（サービスアカウントJSON）。")
-#    st.stop()
-#if "gsheet_id" not in st.secrets:
-#    st.error("Secrets に gsheet_id がありません（スプレッドシートID）。")
-#    st.stop()
+# 必須 Secrets チェック
+if "persona_api_keys" not in st.secrets:
+    st.error("Secrets に persona_api_keys がありません。 .streamlit/secrets.toml を設定してください。")
+    st.stop()
+if "gcp_service_account" not in st.secrets:
+    st.error("Secrets に gcp_service_account がありません（サービスアカウントJSON）。")
+    st.stop()
+if "gsheet_id" not in st.secrets:
+    st.error("Secrets に gsheet_id がありません（スプレッドシートID）。")
+    st.stop()
 
 # --- ▼▼▼ ここを修正しました ▼▼▼ ---
 # Secretsからpersona_api_keysテーブル（表示名とキー変数のマッピング）を読み込む
@@ -344,4 +344,5 @@ elif st.session_state.page == "chat":
         st.session_state.messages = []
         st.query_params.clear()
         st.rerun()
+
 
