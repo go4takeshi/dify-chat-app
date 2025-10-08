@@ -15,14 +15,6 @@ import streamlit as st
 # =========================
 DIFY_CHAT_URL = "https://api.dify.ai/v1/chat-messages"
 
-## ▼▼▼【ここのチェックを一時的に変更】▼▼▼
-#if "test_message" in st.secrets:
-#    st.success(st.secrets.test_message)
-#else:
-#    st.error("テスト用のキー 'test_message' が見つかりません。")
-#st.stop() # ここで一度処理を止めて確認する
-## ▲▲▲【ここまで変更】▲▲▲
-
 # 必須 Secrets チェック
 if "persona_api_keys" not in st.secrets:
     st.error("Secrets に persona_api_keys がありません。 .streamlit/secrets.toml を設定してください。")
@@ -34,15 +26,13 @@ if "gsheet_id" not in st.secrets:
     st.error("Secrets に gsheet_id がありません（スプレッドシートID）。")
     st.stop()
 
-# --- ▼▼▼ ここを修正しました ▼▼▼ ---
-# Secretsからpersona_api_keysテーブル（表示名とキー変数のマッピング）を読み込む
-persona_key_map = dict(st.secrets["persona_api_keys"])
+# Secretsからpersona_api_keysテーブル（表示名とキー変数/キー本体のマッピング）を読み込む
+persona_key_map = dict(st.secrets["persona_api_keys"])  # 例：{"①ミノン...": "PERSONA_1_KEY"}
 
-# マッピングの値を、Secretsに定義された実際のAPIキーに置換する
+# マッピングの値を Secrets に定義された実際のAPIキーに解決（直接 app-... が入っていればそれを採用）
 PERSONA_API_KEYS: Dict[str, str] = {
     k: st.secrets.get(str(v), str(v)) for k, v in persona_key_map.items()
 }
-# --- ▲▲▲ 修正はここまで ▲▲▲ ---
 
 GSHEET_ID: str = st.secrets["gsheet_id"]
 MAX_INPUT_CHARS: int = int(st.secrets.get("max_input_chars", 0))
@@ -60,19 +50,67 @@ PERSONA_AVATARS: Dict[str, str] = {
 }
 
 # =========================
+# Bot name resolver (表記ゆれ対策)
+# =========================
+CANONICAL_BOT_NAMES = set(PERSONA_API_KEYS.keys())
+
+# 過去ログに残っている可能性のある別表記 → 正規名 への写像
+ALIASES: Dict[str, str] = {
+    # 例：中点や全角スラッシュで保存された過去ログを現行の「/」に寄せる
+    "③ミノンBC理想ファン_保育園・幼稚園ママ_戸田綾香（35）":
+        "③ミノンBC理想ファン_保育園/幼稚園ママ_戸田綾香（35）",
+    # 必要に応じて追加していく
+}
+
+def _normalize_bot_name(s: str) -> str:
+    if not isinstance(s, str):
+        return s
+    t = s.strip()
+    # よくある記号のゆれ
+    t = t.replace("・", "/").replace("／", "/").replace("︰", ":")
+    return t
+
+
+def resolve_bot_type(name: Optional[str]) -> Optional[str]:
+    """ログやクエリから来た bot 表記を正規名に解決する。なければ None。"""
+    if not name:
+        return None
+    if name in CANONICAL_BOT_NAMES:
+        return name
+    n = _normalize_bot_name(name)
+    if n in CANONICAL_BOT_NAMES:
+        return n
+    if name in ALIASES:
+        return ALIASES[name]
+    if n in ALIASES:
+        return ALIASES[n]
+    return None
+
+
+# =========================
 # Google Sheets Utilities
 # =========================
+
 def _get_sa_dict() -> dict:
     # Secrets の gcp_service_account を dict で返す（JSON文字列/TOMLテーブル両対応）
     raw = st.secrets["gcp_service_account"]
     if isinstance(raw, str):
+        s = raw.strip()
         try:
-            return json.loads(raw)
+            return json.loads(s)
         except json.JSONDecodeError:
             # private_key の実改行を \n に自動補正して再トライ（貼付ミス救済）
-            fixed = raw.replace("\r\n", "\n").replace("\n", "\\n")
-            return json.loads(fixed)
-    return dict(raw) # TOMLテーブルの場合も辞書型に統一
+            try:
+                fixed = s.replace("\r\n", "\n").replace("\n", "\\n")
+                return json.loads(fixed)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    "Secrets 'gcp_service_account' が正しいJSONではありません。"
+                    "ダブルクォート、末尾カンマなし、コメントなしで、"
+                    "Google配布のJSONそのまま（または TOMLテーブル）で保存してください。"
+                ) from e
+    return dict(raw)  # TOMLテーブルの場合も辞書型に統一
+
 
 def _gs_client():
     import gspread
@@ -83,17 +121,19 @@ def _gs_client():
     creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
     return gspread.authorize(creds)
 
+
 def _open_sheet():
     import gspread
     from gspread.exceptions import SpreadsheetNotFound, WorksheetNotFound
 
     gc = _gs_client()
+
     try:
         sh = gc.open_by_key(GSHEET_ID)
     except SpreadsheetNotFound:
         st.error("スプレッドシートが見つかりません。Secrets の gsheet_id を確認してください。")
         st.stop()
-    except Exception: # gspread.exceptions.PermissionDenied は gspread 6.0.0で非推奨
+    except Exception:
         st.error("アクセス権がありません。対象シートを Service Account に『編集者』で共有してください。")
         st.stop()
 
@@ -103,6 +143,7 @@ def _open_sheet():
         ws = sh.add_worksheet(title="chat_logs", rows=1000, cols=10)
         ws.append_row(["timestamp", "conversation_id", "bot_type", "role", "name", "content"])
     return ws
+
 
 def save_log(conversation_id: str, bot_type: str, role: str, name: str, content: str) -> None:
     # 1行追記（APIの一時的エラーに対して指数バックオフ付きで再試行）
@@ -122,6 +163,7 @@ def save_log(conversation_id: str, bot_type: str, role: str, name: str, content:
             raise
     raise RuntimeError("Google Sheets への保存に連続失敗しました。")
 
+
 @st.cache_data(ttl=3)
 def load_history(conversation_id: str, bot_type: Optional[str] = None) -> pd.DataFrame:
     # 会話IDの履歴を読み込み。bot_type 指定時は複合キーで絞込。
@@ -132,7 +174,7 @@ def load_history(conversation_id: str, bot_type: Optional[str] = None) -> pd.Dat
         return df
     # カラムが期待通りに存在するか確認
     if "conversation_id" not in df.columns:
-        return pd.DataFrame() # 空のDFを返す
+        return pd.DataFrame()  # 空のDFを返す
 
     df = df[df["conversation_id"] == conversation_id].copy()
     if bot_type is not None and "bot_type" in df.columns:
@@ -141,6 +183,7 @@ def load_history(conversation_id: str, bot_type: Optional[str] = None) -> pd.Dat
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         df = df.sort_values("timestamp")
     return df
+
 
 # =========================
 # Streamlit App
@@ -178,7 +221,7 @@ if st.session_state.page == "login":
         if not persona_choices:
             st.error("persona_api_keys が空です。Secrets を確認してください。")
             st.stop()
-        
+
         # bot_type が persona_choices に存在する場合のみ index を設定
         try:
             current_index = persona_choices.index(st.session_state.bot_type)
@@ -217,16 +260,27 @@ elif st.session_state.page == "chat":
             if not df_any.empty and "bot_type" in df_any.columns:
                 series = df_any["bot_type"].dropna()
                 if not series.empty:
-                    cid_bot = series.mode().iloc[0]
-                    if cid_bot and st.session_state.bot_type != cid_bot:
-                        st.session_state.bot_type = cid_bot
-                        st.query_params["bot"] = cid_bot
-                        st.warning(f"この会話IDは『{cid_bot}』で作成されています。ペルソナを自動で合わせました。")
+                    cid_bot_raw = series.mode().iloc[0]
+                    cid_bot = resolve_bot_type(cid_bot_raw)
+
+                    if not cid_bot:
+                        st.warning(
+                            f"この会話IDは未知のペルソナ表記『{cid_bot_raw}』で作成されています。"
+                            "セレクトボックスから該当のペルソナを選び直してください。"
+                        )
+                    else:
+                        if st.session_state.bot_type != cid_bot:
+                            st.session_state.bot_type = cid_bot
+                            st.query_params["bot"] = cid_bot
+                            if cid_bot_raw != cid_bot:
+                                st.info(f"表記ゆれ『{cid_bot_raw}』→『{cid_bot}』に自動補正しました。")
 
         except Exception as e:
             st.info(f"会話IDのペルソナ自動判定に失敗しました: {e}")
 
-    st.markdown(f"#### 💬 {st.session_state.bot_type}")
+    resolved_current_bt = resolve_bot_type(st.session_state.bot_type) or st.session_state.bot_type
+
+    st.markdown(f"#### 💬 {resolved_current_bt}")
 
     # 共有リンク
     cid_show = st.session_state.cid or "(未発行：最初の発話で採番されます)"
@@ -235,15 +289,14 @@ elif st.session_state.page == "chat":
         params = {
             "page": "chat",
             "cid": st.session_state.cid,
-            "bot": st.session_state.bot_type,
+            "bot": resolved_current_bt,
             "name": st.session_state.name,
         }
         share_link = f"/?{urlencode(params)}"
         st.link_button("この会話の共有リンクをコピー", share_link)
 
-
     # アバター
-    assistant_avatar_file = PERSONA_AVATARS.get(st.session_state.bot_type, "default_assistant.png")
+    assistant_avatar_file = PERSONA_AVATARS.get(resolved_current_bt, "default_assistant.png")
     user_avatar = st.session_state.get("user_avatar_data") if st.session_state.get("user_avatar_data") else "👤"
     assistant_avatar = assistant_avatar_file if os.path.exists(assistant_avatar_file) else "🤖"
 
@@ -252,8 +305,9 @@ elif st.session_state.page == "chat":
         try:
             df = load_history(st.session_state.cid)
             for _, r in df.iterrows():
-                # アバターを動的に設定
-                row_av_file = PERSONA_AVATARS.get(r.get("bot_type"), "default_assistant.png")
+                # ログ側 bot_type も解決してからアバターを選ぶ
+                row_bt_resolved = resolve_bot_type(r.get("bot_type")) or r.get("bot_type")
+                row_av_file = PERSONA_AVATARS.get(row_bt_resolved, "default_assistant.png")
                 row_assistant_avatar = row_av_file if os.path.exists(row_av_file) else "🤖"
 
                 avatar = row_assistant_avatar if r["role"] == "assistant" else user_avatar
@@ -282,16 +336,19 @@ elif st.session_state.page == "chat":
                 st.session_state.messages.append({"role": "user", "content": user_input})
             else:
                 try:
-                    save_log(st.session_state.cid, st.session_state.bot_type, "user", st.session_state.name or "anonymous", user_input)
+                    save_log(st.session_state.cid, resolved_current_bt, "user", st.session_state.name or "anonymous", user_input)
                 except Exception as e:
                     st.warning(f"スプレッドシート保存に失敗（user）：{e}")
             with st.chat_message("user", avatar=user_avatar):
                 st.markdown(user_input)
 
             # Dify へ送信
-            api_key = PERSONA_API_KEYS.get(st.session_state.bot_type)
+            resolved_bt = resolve_bot_type(st.session_state.bot_type) or st.session_state.bot_type
+            api_key = (PERSONA_API_KEYS.get(resolved_bt) or "").strip()
             if not api_key or not api_key.startswith("app-"):
-                st.error("選択されたペルソナのAPIキーが正しく設定されていません。Secretsを確認してください。")
+                st.error(
+                    f"選択されたペルソナ『{resolved_bt}』のAPIキーが正しく設定されていません。Secretsを確認してください。"
+                )
             else:
                 headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
                 payload = {
@@ -316,13 +373,13 @@ elif st.session_state.page == "chat":
                                 if is_new_thread and new_cid:
                                     st.session_state.cid = new_cid
                                     st.query_params["cid"] = new_cid
-                                    # 初回ユーザー発話の遅延保存
-                                    save_log(st.session_state.cid, st.session_state.bot_type, "user", st.session_state.name or "anonymous", user_input)
-                                
-                                # アシスタント発話の保存
-                                save_log(st.session_state.cid, st.session_state.bot_type, "assistant", st.session_state.bot_type, answer)
+                                    # 初回ユーザー発話の遅延保存（正規名で固定して保存）
+                                    save_log(st.session_state.cid, resolved_bt, "user", st.session_state.name or "anonymous", user_input)
+
+                                # アシスタント発話の保存（正規名で固定）
+                                save_log(st.session_state.cid, resolved_bt, "assistant", resolved_bt, answer)
                                 st.markdown(answer)
-                    
+
                     except requests.exceptions.RequestException as e:
                         answer = f"⚠️ APIリクエストエラー: {e}"
                         st.error(answer)
