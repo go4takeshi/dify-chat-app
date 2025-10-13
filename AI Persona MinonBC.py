@@ -26,13 +26,32 @@ PERSONA_NAMES = [
     "⑧ミノンBC未満ファン_更年期女性_杉山紀子（51）",
 ]
 
+
 def get_persona_api_keys():
-    """SecretsからAPIキーを読み込む"""
+    """SecretsからAPIキーを読み込む（トップレベル/ネスト両対応 & フォールバック）"""
     keys = {}
+
+    # 1) まずはトップレベル（従来）
     for i, name in enumerate(PERSONA_NAMES):
-        key = st.secrets.get(f"PERSONA_{i+1}_KEY")
-        if key:
-            keys[name] = key
+        k = st.secrets.get(f"PERSONA_{i+1}_KEY")
+        if k:
+            keys[name] = k
+
+    # 2) 次に [persona_api_keys] テーブル
+    if "persona_api_keys" in st.secrets:
+        table = st.secrets["persona_api_keys"]
+        for i, name in enumerate(PERSONA_NAMES):
+            k = table.get(f"PERSONA_{i+1}_KEY")
+            if k and name not in keys:
+                keys[name] = k
+
+    # 3) 何も見つからない場合の汎用フォールバック（任意）
+    if not keys:
+        generic = st.secrets.get("DIFY_API_KEY")
+        if generic:
+            for name in PERSONA_NAMES:
+                keys[name] = generic
+
     return keys
 
 PERSONA_API_KEYS = get_persona_api_keys()
@@ -453,3 +472,4 @@ else:
     if st.button("最初のページに戻る"):
         init_session_state()
         st.rerun()
+
